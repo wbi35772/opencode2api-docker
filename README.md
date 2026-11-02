@@ -103,8 +103,11 @@ WARP needs only outbound UDP (Cloudflare endpoint port `2408`), so the image's n
 | `OPENCODE2API_WEBUI_PORT`   | `28081`  | Host port mapped to container port 8081.          |
 | `OPENCODE2API_LISTEN`       | Unset    | Explicit container API listen override.           |
 | `OPENCODE2API_WEBUI_LISTEN` | Unset    | Explicit container WebUI listen override.         |
+| `CONFIG_JSON`               | Unset    | Full config JSON, used only when `config.json` is absent (e.g. platforms that cannot mount files). |
 
-The last two variables become `LISTEN_ADDRESS` and `WEBUI_LISTEN_ADDRESS` inside the container. Empty values defer to the configuration file. While initializing a configuration, the entrypoint changes the example API address `127.0.0.1:8080` to `0.0.0.0:8080` so published ports can reach it.
+The first two variables become `LISTEN_ADDRESS` and `WEBUI_LISTEN_ADDRESS` inside the container. Empty values defer to the configuration file. While initializing a configuration, the entrypoint changes the example API address `127.0.0.1:8080` to `0.0.0.0:8080` so published ports can reach it.
+
+`CONFIG_JSON` seeds the state volume on the first start only and is not logged; delete the volume (`docker compose down -v`) to re-seed. The other container variables are `CONFIG_PATH` (default `/var/lib/opencode2api/config.json`), `CONFIG_SEED_PATH` (a mounted JSON file), and `STATE_DIR`.
 
 Changing host ports does not change container listeners. If you change the internal API port, also update the port mapping and the image health check, which uses port 8080.
 

@@ -13,6 +13,8 @@ services:
       # OPENCODE2API_LISTEN / OPENCODE2API_WEBUI_LISTEN to override them.
       LISTEN_ADDRESS: ${OPENCODE2API_LISTEN:-}
       WEBUI_LISTEN_ADDRESS: ${OPENCODE2API_WEBUI_LISTEN:-}
+      # Seeds the first config when config.json is absent; ignored afterwards.
+      CONFIG_JSON: ${CONFIG_JSON:-}
     # 28080/28081 keep the gateway clear of the 8080/8081 pair that WSL
     # development stacks commonly reserve for a proxy and its own WebUI.
     ports:

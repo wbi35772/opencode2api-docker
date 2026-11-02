@@ -54,6 +54,18 @@ OPENCODE2API_PORT=38080 OPENCODE2API_WEBUI_PORT=38081 docker compose up -d
 ## 配置与状态
 
 - 首次启动把宿主机 `config.json` 复制到命名卷 `opencode2api-state`，之后**只使用卷内文件**；直接改宿主机文件不会生效。
+- 只提供环境变量、没有挂载配置文件的平台（如 InstaCloud）可以用 `CONFIG_JSON` 传入整段配置。它只在 `config.json` 不存在时生效，写入权限为 `0600`，内容不会进日志：
+
+  ```bash
+  CONFIG_JSON='{"listen":"0.0.0.0:8080","server_keys":["sk-your-key"],"anonymous":false,"webui":{"enabled":true,"listen":"0.0.0.0:8081","username":"admin","password":"a-strong-password"}}'
+  ```
+
+  配置里如果仍是示例监听地址 `127.0.0.1:8080`，入口脚本仍会改成 `0.0.0.0:8080`。`webui` 块不能省：不写时 WebUI 默认关闭（`enabled` 默认 false），28081 端口会拒绝连接；启用时 `username` 必填，`password` 至少 10 位。要修改 `server_keys`、密码等结构复杂的配置，优先用 WebUI，或删掉状态卷后重新提供 `CONFIG_JSON`：
+
+  ```bash
+  docker compose down -v && docker compose up -d
+  ```
+
 - 后续修改优先用 WebUI。需要重新导入宿主机文件时：
 
   ```bash

@@ -103,8 +103,11 @@ WARP 只需要出站 UDP（Cloudflare 端点端口 `2408`），因此镜像的�
 | `OPENCODE2API_WEBUI_PORT`   | `28081`  | 映射到容器 8081 的宿主机端口。       |
 | `OPENCODE2API_LISTEN`       | 未设置   | 显式覆盖容器内 API 监听地址。        |
 | `OPENCODE2API_WEBUI_LISTEN` | 未设置   | 显式覆盖容器内 WebUI 监听地址。      |
+| `CONFIG_JSON`               | 未设置   | 完整配置 JSON；仅在 `config.json` 不存在时使用（适用于无法挂载文件的平台）。 |
 
-后两项在容器内对应 `LISTEN_ADDRESS` 与 `WEBUI_LISTEN_ADDRESS`。值为空时使用配置文件中的地址。首次初始化配置时，入口脚本会将示例 API 地址 `127.0.0.1:8080` 改为 `0.0.0.0:8080`，使其能够通过发布端口访问。
+前两项在容器内对应 `LISTEN_ADDRESS` 与 `WEBUI_LISTEN_ADDRESS`。值为空时使用配置文件中的地址。首次初始化配置时，入口脚本会将示例 API 地址 `127.0.0.1:8080` 改为 `0.0.0.0:8080`，使其能够通过发布端口访问。
+
+`CONFIG_JSON` 只在首次启动时写入状态卷，且不会出现在日志里；需要重新初始化时执行 `docker compose down -v` 再启动。其他容器变量还有 `CONFIG_PATH`（默认 `/var/lib/opencode2api/config.json`）、`CONFIG_SEED_PATH`（挂载的 JSON 文件）和 `STATE_DIR`。
 
 修改宿主机端口不会改变容器内监听地址。如果修改容器内 API 端口，还需要同步调整端口映射和镜像健康检查；默认健康检查使用 8080 端口。
 

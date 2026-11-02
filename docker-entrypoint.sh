@@ -4,6 +4,9 @@ set -eu
 state_dir=${STATE_DIR:-/var/lib/opencode2api}
 config_path=${CONFIG_PATH:-$state_dir/config.json}
 config_seed_path=${CONFIG_SEED_PATH:-}
+# CONFIG_JSON lets a platform that only exposes environment variables seed the
+# first config. It is never logged and is ignored once config.json exists.
+config_json=${CONFIG_JSON:-}
 # Empty means "defer to config.json". Only an explicitly provided value becomes
 # a command-line override, so the file stays authoritative as documented.
 listen_address=${LISTEN_ADDRESS:-}
@@ -31,7 +34,14 @@ seed_container_listen() {
 
 if [ ! -f "$config_path" ]; then
     mkdir -p "$(dirname "$config_path")"
-    if [ -n "$config_seed_path" ] && [ -f "$config_seed_path" ]; then
+    if [ -n "$config_json" ]; then
+        # Keep the file private: it usually carries server keys and the WebUI
+        # password. The JSON itself is not echoed to the log.
+        umask 077
+        printf '%s' "$config_json" > "$config_path"
+        seed_container_listen "$config_path"
+        printf '%s\n' "Initialized $config_path from CONFIG_JSON."
+    elif [ -n "$config_seed_path" ] && [ -f "$config_seed_path" ]; then
         cp "$config_seed_path" "$config_path"
         seed_container_listen "$config_path"
         printf '%s\n' "Initialized $config_path from $config_seed_path."
