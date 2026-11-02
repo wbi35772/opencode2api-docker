@@ -76,12 +76,12 @@ La directory di configurazione deve essere scrivibile per migrare la password, s
 
 ## Docker
 
-L'immagine pubblicata è `ghcr.io/jasonxu114514/opencode2api`.
+Compose compila `opencode2api:local` da questo checkout per impostazione predefinita; imposta `OPENCODE2API_IMAGE` per usare un altro tag. Per la guida WSL2 (porte, WARP, persistenza) vedi [docs/docker-wsl2.zh-CN.md](docs/docker-wsl2.zh-CN.md) (cinese).
 
 ```bash
 cp config.example.json config.json
 # Configura le chiavi e sostituisci la password WebUI prima dell'avvio.
-docker compose up -d
+docker compose up -d --build
 docker compose logs -f
 ```
 
@@ -94,13 +94,13 @@ docker compose restart
 
 Il container esegue il servizio con un utente non privilegiato. Compose usa un filesystem root in sola lettura, un volume di stato scrivibile e un filesystem temporaneo `/tmp`.
 
-WARP richiede solo UDP in uscita (endpoint Cloudflare, porta `2408`), quindi la configurazione dell'immagine senza privilegi e senza `NET_ADMIN` funziona così com'è; non serve passare a host networking né aggiungere `--cap-add`. Se la rete del container blocca UDP, l'abilitazione di WARP fallisce all'avvio.
+WARP richiede solo UDP in uscita (endpoint Cloudflare, porta `2408`), quindi la configurazione dell'immagine senza privilegi e senza `NET_ADMIN` funziona così com'è; non serve passare a host networking né aggiungere `--cap-add`. All'avvio il gateway attende fino a 90 secondi la prima registrazione WARP; se fallisce ancora, apre i listener senza WARP e riprova in background (15s, 30s, 1m, 2m, poi ogni 5m), passando al pool WARP quando una registrazione riesce. L'abilitazione da WebUI resta fail-closed: il salvataggio attende fino a 45 secondi, poi restituisce un errore e il runtime precedente continua a servire.
 
 | Variabile Compose           | Predefinito | Effetto                                                    |
 | --------------------------- | ----------- | ---------------------------------------------------------- |
-| `OPENCODE2API_VERSION`      | `latest`    | Tag dell'immagine; fissa un tag di release per una versione precisa. |
-| `OPENCODE2API_PORT`         | `8080`      | Porta host mappata alla porta 8080 del container.          |
-| `OPENCODE2API_WEBUI_PORT`   | `8081`      | Porta host mappata alla porta 8081 del container.          |
+| `OPENCODE2API_IMAGE`        | `opencode2api:local` | Nome e tag dell'immagine compilata o eseguita da Compose. |
+| `OPENCODE2API_PORT`         | `28080`     | Porta host mappata alla porta 8080 del container.          |
+| `OPENCODE2API_WEBUI_PORT`   | `28081`     | Porta host mappata alla porta 8081 del container.          |
 | `OPENCODE2API_LISTEN`       | Non impostata | Sostituisce esplicitamente l'ascolto API nel container.   |
 | `OPENCODE2API_WEBUI_LISTEN` | Non impostata | Sostituisce esplicitamente l'ascolto WebUI nel container. |
 
@@ -114,7 +114,7 @@ Per creare un'immagine locale:
 docker build -t opencode2api:local .
 docker volume create opencode2api-state
 docker run -d --name opencode2api \
-  -p 8080:8080 -p 8081:8081 \
+  -p 28080:8080 -p 28081:8081 \
   -e CONFIG_SEED_PATH=/run/config/opencode2api.json \
   -v "$(pwd)/config.json:/run/config/opencode2api.json:ro" \
   -v opencode2api-state:/var/lib/opencode2api \
@@ -246,11 +246,11 @@ I modelli gratuiti non richiedono una chiave Zen: con `anonymous: true` usano il
 
 `warp.enabled` sposta ogni richiesta di un modello gratuito sul canale gratuito — canale anonimo, fallback dei modelli gratuiti tramite chiave Zen, probe di disponibilità e aggiornamento anonimo del catalogo — su un tunnel Cloudflare WARP in userspace. Queste richieste non usano alcun proxy, quindi l'upstream vede l'indirizzo di uscita WARP invece del nodo configurato. Le chiavi del piano Go e i modelli a pagamento mantengono i loro proxy.
 
-Il tunnel vive nel processo del gateway: registra un dispositivo WARP, parla WireGuard su UDP con Cloudflare e termina in uno stack di rete in userspace. Non richiede dispositivi TUN, root, `NET_ADMIN` né modifiche alla tabella di routing, ma l'host o il container deve poter inviare UDP verso l'endpoint di Cloudflare (porta `2408`). Registrazione e probe del trace `warp=on` avvengono all'avvio; se WARP non riesce a inizializzarsi, l'avvio fallisce invece di ripiegare silenziosamente sui proxy. Anche l'abilitazione dalla WebUI è fail-closed: un valore errato restituisce un errore e il runtime precedente continua a servire.
+Il tunnel vive nel processo del gateway: registra un dispositivo WARP, parla WireGuard su UDP con Cloudflare e termina in uno stack di rete in userspace. Non richiede dispositivi TUN, root, `NET_ADMIN` né modifiche alla tabella di routing, ma l'host o il container deve poter inviare UDP verso l'endpoint di Cloudflare (porta `2408`). Registrazione e probe del trace `warp=on` avvengono all'avvio e attendono fino a 90 secondi la prima uscita. Se WARP non riesce ancora a inizializzarsi, il gateway apre i listener senza WARP e riprova in background (15s, 30s, 1m, 2m, poi ogni 5m), passando al pool WARP quando una registrazione riesce. Abilitare o modificare WARP dalla WebUI resta fail-closed: il salvataggio attende fino a 45 secondi, poi restituisce un errore e il runtime precedente continua a servire.
 
-`warp.pool_size` (1–32, predefinito `2`) è un **limite massimo**, non un numero fisso. La prima uscita viene registrata in modo sincrono e determina la readiness; poi il pool registra in background metà del massimo (almeno una), così un picco trova uscite già calde senza attendere. Il ring attivo segue la concorrenza: un'uscita per ogni richiesta in corso più una di riserva, mai oltre il massimo; le uscite in eccesso rimaste inattive per 60 secondi vengono ritirate. La prima risposta 429 o 403 ritira subito l'uscita e una uscita pre-registrata ne prende il posto; una richiesta per modelli gratuiti continua a cambiare uscita e restituisce l'ultimo 429 al client solo dopo aver esaurito `retry.max_attempts`, mentre l'uscita ritirata viene registrata di nuovo subito in background. Le registrazioni restano serializzate; il 429/Retry-After di Cloudflare detta il ritmo al posto di un intervallo fisso. Se il colo assegna meno blocchi di uscita distinti del preload, il pool arretra invece di registrare all'infinito; le probe automatiche dei modelli gratuiti saltano un pool senza uscita di riserva e fermano il ciclo dopo che una probe ha ritirato un'uscita. `warp.stack` seleziona `ipv6` (predefinito), `ipv4` o `dual`.
+`warp.pool_size` (1–32, predefinito `2`) è un **limite massimo**, non un numero fisso. La prima uscita viene registrata in modo sincrono e determina la readiness; poi il pool pre-registra in background l'intero massimo, fino a 8 uscite, così un picco trova uscite già calde senza attendere. Il ring attivo segue la concorrenza: un'uscita per ogni richiesta in corso più una di riserva, mai oltre il massimo; le uscite in eccesso rimaste inattive per 60 secondi vengono ritirate. La prima risposta 429 o 403 ritira subito l'uscita e una uscita pre-registrata ne prende il posto; una richiesta per modelli gratuiti continua a cambiare uscita e restituisce l'ultimo 429 al client solo dopo aver esaurito `retry.max_attempts`, mentre l'uscita ritirata viene registrata di nuovo subito in background. Le registrazioni restano serializzate; il 429/Retry-After di Cloudflare detta il ritmo al posto di un intervallo fisso. Se il colo assegna meno blocchi di uscita distinti del preload, il pool arretra invece di registrare all'infinito; le probe automatiche dei modelli gratuiti saltano un pool senza uscita di riserva e fermano il ciclo dopo che una probe ha ritirato un'uscita. `warp.stack` seleziona `ipv6` (predefinito), `ipv4` o `dual`.
 
-La quota gratuita dell'upstream è legata al **blocco di uscita**, quindi la rotazione serve solo se la nuova uscita proviene da un blocco diverso: un'uscita IPv6 è identificata e raffreddata per 30 minuti dal suo `/64`, una IPv4 dal suo `/32`. L'uscita IPv4 di Cloudflare WARP è di solito un unico indirizzo NAT condiviso, spesso già esaurito da altri utenti; lo stack IPv6 ricava l'uscita dall'indirizzo sorgente WireGuard esterno. Imposta `warp.source_ipv6` su un prefisso IPv6 instradato verso l'host (di solito un `/64`, lo stack predefinito è già `ipv6`) perché ogni uscita associ il proprio indirizzo sorgente da quel prefisso. Su Linux l'indirizzo viene associato con `IPV6_FREEBIND` (impostato dal gateway) oppure deve essere già assegnato a un'interfaccia. La famiglia degli endpoint non viene verificata in anticipo: l'handshake prova prima gli endpoint IPv6 e ripiega su quelli IPv4 quando nessuno risponde (in quel caso l'uscita è l'indirizzo condiviso). Lasciando vuoto il campo si usa l'indirizzo sorgente predefinito dell'host. Su reti con il pool di uscite WARP già saturo anche una nuova uscita può rispondere 429: il gateway continua a ruotare e restituisce un 429 solo esaurito il budget di tentativi. `/healthz` restituisce un blocco `warp` e risponde 503 quando WARP è attivo ma nessuna uscita è operativa; `no_healthy_proxies` blocca la readiness solo con WARP disattivato o quando servono proxy per le chiavi Go. Le richieste diagnostiche acquisiscono un'uscita ma non la ruotano né la penalizzano. Disattivando WARP, i canali gratuiti tornano a usare i proxy.
+La quota gratuita dell'upstream è legata al **blocco di uscita**, quindi la rotazione serve solo se la nuova uscita proviene da un blocco diverso: un'uscita IPv6 è inserita in blacklist per il suo `/64`, una IPv4 per il suo `/32`. Un 429 di quota blocca il blocco per 24 ore fisse (`Retry-After` può estenderlo, fino a 24 ore); un limite di frequenza ordinario lo blocca per 1 minuto (massimo 5 minuti); un errore di trasporto blocca l'uscita per 90 secondi. La blacklist è persistita in `config.json.warp-state.json` accanto alla configurazione, quindi un riavvio non rimette in rotazione i blocchi esauriti. L'uscita IPv4 di Cloudflare WARP è di solito un unico indirizzo NAT condiviso, spesso già esaurito da altri utenti; lo stack IPv6 ricava l'uscita dall'indirizzo sorgente WireGuard esterno. Imposta `warp.source_ipv6` su un prefisso IPv6 instradato verso l'host (di solito un `/64`, lo stack predefinito è già `ipv6`) perché ogni uscita associ il proprio indirizzo sorgente da quel prefisso. Su Linux l'indirizzo viene associato con `IPV6_FREEBIND` (impostato dal gateway) oppure deve essere già assegnato a un'interfaccia. La famiglia degli endpoint non viene verificata in anticipo: l'handshake prova prima gli endpoint IPv6 e ripiega su quelli IPv4 quando nessuno risponde (in quel caso l'uscita è l'indirizzo condiviso). Lasciando vuoto il campo si usa l'indirizzo sorgente predefinito dell'host. Su reti con il pool di uscite WARP già saturo anche una nuova uscita può rispondere 429: il gateway continua a ruotare e restituisce un 429 solo esaurito il budget di tentativi. `/healthz` restituisce un blocco `warp` e risponde 503 quando WARP è attivo ma nessuna uscita è operativa; `no_healthy_proxies` blocca la readiness solo con WARP disattivato o quando servono proxy per le chiavi Go. Le richieste diagnostiche acquisiscono un'uscita ma non la ruotano né la penalizzano. Disattivando WARP, i canali gratuiti tornano a usare i proxy.
 
 ### System prompt ufficiale
 
@@ -301,7 +301,7 @@ Consulta [config.example.json](config.example.json) per una configurazione inizi
 | `zen_keys`, `go_keys`       | È richiesta una chiave upstream, salvo accesso anonimo abilitato.            |
 | `anonymous`                 | `false`.                                                                      |
 | `warp.enabled`              | `false`; il traffico dei canali gratuiti esce via Cloudflare WARP, senza proxy. |
-| `warp.pool_size`            | `2`; limite massimo di uscite WARP (metà pre-registrata in background; il ring attivo segue la concorrenza), 1–32. |
+| `warp.pool_size`            | `2`; limite massimo di uscite WARP (l'intero pool è pre-registrato fino a 8; il ring attivo segue la concorrenza), 1–32. |
 | `warp.stack`                | `ipv6`; `ipv6`, `ipv4` o `dual`.                                              |
 | `warp.source_ipv6`          | vuoto; prefisso IPv6 (`/64`) da cui ogni uscita associa la sorgente esterna; richiede `stack = "ipv6"`. |
 | `prefer`                    | `go`; accetta `go` o `zen`.                                                   |

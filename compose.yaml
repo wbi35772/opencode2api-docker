@@ -1,7 +1,7 @@
 services:
   opencode2api:
-    image: ghcr.io/jasonxu114514/opencode2api:${OPENCODE2API_VERSION:-latest}
-    pull_policy: always
+    build: .
+    image: ${OPENCODE2API_IMAGE:-opencode2api:local}
     restart: unless-stopped
     read_only: true
     security_opt:
@@ -13,9 +13,11 @@ services:
       # OPENCODE2API_LISTEN / OPENCODE2API_WEBUI_LISTEN to override them.
       LISTEN_ADDRESS: ${OPENCODE2API_LISTEN:-}
       WEBUI_LISTEN_ADDRESS: ${OPENCODE2API_WEBUI_LISTEN:-}
+    # 28080/28081 keep the gateway clear of the 8080/8081 pair that WSL
+    # development stacks commonly reserve for a proxy and its own WebUI.
     ports:
-      - "${OPENCODE2API_PORT:-8080}:8080"
-      - "${OPENCODE2API_WEBUI_PORT:-8081}:8081"
+      - "${OPENCODE2API_PORT:-28080}:8080"
+      - "${OPENCODE2API_WEBUI_PORT:-28081}:8081"
     configs:
       - source: opencode2api_config
         target: /run/config/opencode2api.json

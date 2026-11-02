@@ -76,12 +76,12 @@ Windows 下使用 `Copy-Item config.example.json config.json` 复制配置，执
 
 ## Docker 部署
 
-已发布镜像：`ghcr.io/jasonxu114514/opencode2api`。
+Compose 默认从当前源码构建 `opencode2api:local`；如需使用其他标签，设置 `OPENCODE2API_IMAGE`。WSL2 的端口、WARP 与持久化细节见 [Docker 部署（WSL2 验证版）](docs/docker-wsl2.zh-CN.md)。
 
 ```bash
 cp config.example.json config.json
 # 启动前填写 Key，并替换 WebUI 密码。
-docker compose up -d
+docker compose up -d --build
 docker compose logs -f
 ```
 
@@ -94,13 +94,13 @@ docker compose restart
 
 容器内的服务进程使用普通用户运行。Compose 启用只读根文件系统，并提供可写状态卷和临时 `/tmp` 文件系统。
 
-WARP 只需要出站 UDP（Cloudflare 端点端口 `2408`），因此镜像的普通用户、无 `NET_ADMIN` 配置无需改动；不要为此改用 host 网络或添加 `--cap-add`。如果容器网络禁止 UDP，启用 WARP 会在启动时失败。
+WARP 只需要出站 UDP（Cloudflare 端点端口 `2408`），因此镜像的普通用户、无 `NET_ADMIN` 配置无需改动；不要为此改用 host 网络或添加 `--cap-add`。启动时最多等 90 秒完成首次 WARP 注册；容器网络仍禁止 UDP 时，网关会先不带 WARP 启动并在后台重试（15 秒、30 秒、1 分钟、2 分钟，之后每 5 分钟），注册成功后热切换到 WARP 池。通过 WebUI 启用 WARP 仍采用失败即回滚：最多等 45 秒，失败会返回错误，旧运行时继续服务。
 
 | Compose 环境变量            | 默认值   | 作用                                 |
 | --------------------------- | -------- | ------------------------------------ |
-| `OPENCODE2API_VERSION`      | `latest` | 镜像标签；可指定发行标签来固定版本。 |
-| `OPENCODE2API_PORT`         | `8080`   | 映射到容器 8080 的宿主机端口。       |
-| `OPENCODE2API_WEBUI_PORT`   | `8081`   | 映射到容器 8081 的宿主机端口。       |
+| `OPENCODE2API_IMAGE`        | `opencode2api:local` | Compose 构建或运行的镜像名与标签。 |
+| `OPENCODE2API_PORT`         | `28080`  | 映射到容器 8080 的宿主机端口。       |
+| `OPENCODE2API_WEBUI_PORT`   | `28081`  | 映射到容器 8081 的宿主机端口。       |
 | `OPENCODE2API_LISTEN`       | 未设置   | 显式覆盖容器内 API 监听地址。        |
 | `OPENCODE2API_WEBUI_LISTEN` | 未设置   | 显式覆盖容器内 WebUI 监听地址。      |
 
@@ -114,7 +114,7 @@ WARP 只需要出站 UDP（Cloudflare 端点端口 `2408`），因此镜像的�
 docker build -t opencode2api:local .
 docker volume create opencode2api-state
 docker run -d --name opencode2api \
-  -p 8080:8080 -p 8081:8081 \
+  -p 28080:8080 -p 28081:8081 \
   -e CONFIG_SEED_PATH=/run/config/opencode2api.json \
   -v "$(pwd)/config.json:/run/config/opencode2api.json:ro" \
   -v opencode2api-state:/var/lib/opencode2api \
@@ -248,11 +248,11 @@ System One 将自由文本状态与类型化问题配对，并返回类型化答
 
 启用 `warp.enabled` 后，免费通道上的所有免费模型请求——匿名通道、通过 Zen Key 的免费模型回退、免费模型可用性探测，以及匿名模型目录刷新——都改走用户态 Cloudflare WARP 隧道，不再使用任何代理，因此上游看到的是 WARP 出口地址，而不是配置的节点。Go 套餐 Key 与付费模型仍使用原有代理绑定。
 
-隧道运行在网关进程内：注册 WARP 设备，通过 UDP 与 Cloudflare 建立 WireGuard 连接，并在用户态网络栈中终结。它不需要 TUN 设备、root、`NET_ADMIN` 或修改路由表，但宿主机（或容器）必须能向 Cloudflare 端点发送 UDP（端口 `2408`）。注册与 `warp=on` 的 trace 探测在启动时完成；WARP 无法初始化时启动直接失败，不会静默回退到代理。通过 WebUI 启用同样采用失败即拒绝：参数错误会返回错误，旧运行时继续服务。
+隧道运行在网关进程内：注册 WARP 设备，通过 UDP 与 Cloudflare 建立 WireGuard 连接，并在用户态网络栈中终结。它不需要 TUN 设备、root、`NET_ADMIN` 或修改路由表，但宿主机（或容器）必须能向 Cloudflare 端点发送 UDP（端口 `2408`）。注册与 `warp=on` 的 trace 探测在启动时完成，最多等待 90 秒取得第一个出口。仍然失败时，网关会先不带 WARP 启动监听并在后台重试（15 秒、30 秒、1 分钟、2 分钟，之后每 5 分钟），注册成功后热切换到 WARP 池。通过 WebUI 启用或修改 WARP 仍采用失败即回滚：最多等待 45 秒，失败会返回错误，旧运行时继续服务。
 
-`warp.pool_size`（1–32，默认 `2`）是**上限**而不是固定数量。第一个出口同步注册、决定服务是否 ready；之后池子在后台预注册上限的一半（至少 1 个），突发流量可以直接拿到预热出口而不用等注册。活跃出口再按并发调整：每个在途请求一个出口，另加一个备用，最多不超过上限；空闲 60 秒的多余出口会被回收。出口第一次收到上游 429 或 403 即被淘汰，由预注册的出口立刻顶上——免费模型请求会持续切换到其他出口，直到用完 `retry.max_attempts` 次才把最后一个 429 返回客户端；被淘汰的出口马上在后台重新注册。注册仍然串行，节流改由 Cloudflare 的 429 / Retry-After 决定，而不是固定间隔。若机房能给出的不同出口网段少于预注册目标，池子会退避而不是无限注册；自动免费模型探测在没有备用出口时跳过，并在一轮探测淘汰出口后停止本轮。`warp.stack` 默认 `ipv6`，可选 `ipv4` 或 `dual`。
+`warp.pool_size`（1–32，默认 `2`）是**上限**而不是固定数量。第一个出口同步注册、决定服务是否 ready；之后池子在后台预注册整个上限，最多 8 个，突发流量可以直接拿到预热出口而不用等注册。活跃出口再按并发调整：每个在途请求一个出口，另加一个备用，最多不超过上限；空闲 60 秒的多余出口会被回收。出口第一次收到上游 429 或 403 即被淘汰，由预注册的出口立刻顶上——免费模型请求会持续切换到其他出口，直到用完 `retry.max_attempts` 次才把最后一个 429 返回客户端；被淘汰的出口马上在后台重新注册。注册仍然串行，节流改由 Cloudflare 的 429 / Retry-After 决定，而不是固定间隔。若机房能给出的不同出口网段少于预注册目标，池子会退避而不是无限注册；自动免费模型探测在没有备用出口时跳过，并在一轮探测淘汰出口后停止本轮。池子为空并等待 25 秒后，免费通道返回 `warp_unavailable`；若配置了可用代理，会改走代理而不是直接让客户端失败。`warp.stack` 默认 `ipv6`，可选 `ipv4` 或 `dual`。
 
-上游的免费额度按**出口网段**计算，所以只有替换出口能拿到不同网段时轮换才有意义：IPv6 出口按 `/64` 去重并冷却 30 分钟，IPv4 出口按 `/32`。Cloudflare WARP 的 IPv4 出口通常是同一个共享 NAT 地址，常被其他用户用尽；IPv6 网络栈的出口则由外层 WireGuard 源地址决定。把 `warp.source_ipv6` 设为路由到本机的 IPv6 前缀（通常是 `/64`，`warp.stack` 默认已是 `ipv6`），每个出口就会从该前缀绑定自己的源地址。Linux 下该地址通过 `IPV6_FREEBIND` 绑定（网关已自动设置），或要求地址已分配到网卡。不会预先探测地址族：握手先尝试 IPv6 端点，全部失败时自动回退到 IPv4 端点（此时出口为共享地址）。留空则共用本机默认源地址。某些网络的 WARP 出口池本身已被用尽，此时每个新出口也会返回 429，网关会持续轮换出口，但仍会在尝试次数用尽后返回 429。`/healthz` 会返回 `warp` 状态块；启用 WARP 但没有任何活跃出口时返回 503。只有 WARP 关闭或存在 Go Key 需要代理时，`no_healthy_proxies` 才会阻塞就绪。诊断请求会占用出口，但不会轮换或淘汰它。关闭 WARP 后，免费通道恢复使用代理。
+上游的免费额度按**出口网段**计算，所以只有替换出口能拿到不同网段时轮换才有意义：IPv6 出口按 `/64` 加入黑名单，IPv4 出口按 `/32`。配额 429 会把该网段固定冷却 24 小时（`Retry-After` 可延长，最多 24 小时）；普通限流冷却 1 分钟、最多 5 分钟；传输故障冷却 90 秒。黑名单持久化在配置文件旁的 `config.json.warp-state.json`，重启不会把已用尽的网段重新放回轮换。Cloudflare WARP 的 IPv4 出口通常是同一个共享 NAT 地址，常被其他用户用尽；IPv6 网络栈的出口则由外层 WireGuard 源地址决定。把 `warp.source_ipv6` 设为路由到本机的 IPv6 前缀（通常是 `/64`，`warp.stack` 默认已是 `ipv6`），每个出口就会从该前缀绑定自己的源地址。Linux 下该地址通过 `IPV6_FREEBIND` 绑定（网关已自动设置），或要求地址已分配到网卡。不会预先探测地址族：握手先尝试 IPv6 端点，全部失败时自动回退到 IPv4 端点（此时出口为共享地址）。留空则共用本机默认源地址。某些网络的 WARP 出口池本身已被用尽，此时每个新出口也会返回 429，网关会持续轮换出口，但仍会在尝试次数用尽后返回 429。`/healthz` 会返回 `warp` 状态块；启用 WARP 但没有任何活跃出口时返回 503。只有 WARP 关闭或存在 Go Key 需要代理时，`no_healthy_proxies` 才会阻塞就绪。诊断请求会占用出口，但不会轮换或淘汰它。关闭 WARP 后，免费通道恢复使用代理。
 
 ### 官方系统提示词
 
@@ -303,7 +303,7 @@ Key 初始化时均衡分配到代理。真实流量可以触发代理检查、K
 | `zen_keys`、`go_keys`       | 未启用匿名模式时，至少需要一个上游 Key。                                              |
 | `anonymous`                 | `false`。                                                                             |
 | `warp.enabled`              | `false`；免费通道流量通过 Cloudflare WARP 出口，不使用代理。                          |
-| `warp.pool_size`            | `2`；WARP 出口上限（后台预注册一半，活跃出口按并发调整），1–32。                    |
+| `warp.pool_size`            | `2`；WARP 出口上限（后台预注册整个池、最多 8 个，活跃出口按并发调整），1–32。                    |
 | `warp.stack`                | `ipv6`；可选 `ipv6`、`ipv4`、`dual`。                                                 |
 | `warp.source_ipv6`          | 空；每个出口绑定的外层 IPv6 源前缀（`/64`），要求 `stack = "ipv6"`。                  |
 | `prefer`                    | `go`；可选 `go`、`zen`。                                                              |

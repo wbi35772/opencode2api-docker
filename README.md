@@ -76,12 +76,12 @@ The configuration directory must be writable for password migration, configurati
 
 ## Docker
 
-The published image is `ghcr.io/jasonxu114514/opencode2api`.
+Compose builds `opencode2api:local` from this checkout by default; set `OPENCODE2API_IMAGE` to use another tag. For the WSL2 walkthrough, including port and WARP details, see [docs/docker-wsl2.zh-CN.md](docs/docker-wsl2.zh-CN.md) (Chinese).
 
 ```bash
 cp config.example.json config.json
 # Configure keys and replace the WebUI password before starting.
-docker compose up -d
+docker compose up -d --build
 docker compose logs -f
 ```
 
@@ -94,13 +94,13 @@ docker compose restart
 
 The container runs the service as an unprivileged user. Compose uses a read-only root filesystem, a writable state volume, and a temporary `/tmp` filesystem.
 
-WARP needs only outbound UDP (Cloudflare endpoint port `2408`), so the image's non-root, no-`NET_ADMIN` setup still works; do not switch to host networking or add `--cap-add` for it. If the container network blocks UDP, enabling WARP fails at startup.
+WARP needs only outbound UDP (Cloudflare endpoint port `2408`), so the image's non-root, no-`NET_ADMIN` setup still works; do not switch to host networking or add `--cap-add` for it. Startup waits up to 90 seconds for the first WARP registration; if the container network still blocks it, the gateway opens its listeners without WARP and retries in the background (15s, 30s, 1m, 2m, then every 5m), hot-swapping the pool in when a registration succeeds. Enabling WARP through the WebUI stays fail-closed: the save waits up to 45 seconds, then reports an error and the previous runtime keeps serving.
 
 | Compose variable            | Default  | Effect                                            |
 | --------------------------- | -------- | ------------------------------------------------- |
-| `OPENCODE2API_VERSION`      | `latest` | Image tag. Pin a release tag for a fixed version. |
-| `OPENCODE2API_PORT`         | `8080`   | Host port mapped to container port 8080.          |
-| `OPENCODE2API_WEBUI_PORT`   | `8081`   | Host port mapped to container port 8081.          |
+| `OPENCODE2API_IMAGE`        | `opencode2api:local` | Image name and tag Compose builds or runs. |
+| `OPENCODE2API_PORT`         | `28080`  | Host port mapped to container port 8080.          |
+| `OPENCODE2API_WEBUI_PORT`   | `28081`  | Host port mapped to container port 8081.          |
 | `OPENCODE2API_LISTEN`       | Unset    | Explicit container API listen override.           |
 | `OPENCODE2API_WEBUI_LISTEN` | Unset    | Explicit container WebUI listen override.         |
 
@@ -114,7 +114,7 @@ For a local image:
 docker build -t opencode2api:local .
 docker volume create opencode2api-state
 docker run -d --name opencode2api \
-  -p 8080:8080 -p 8081:8081 \
+  -p 28080:8080 -p 28081:8081 \
   -e CONFIG_SEED_PATH=/run/config/opencode2api.json \
   -v "$(pwd)/config.json:/run/config/opencode2api.json:ro" \
   -v opencode2api-state:/var/lib/opencode2api \
@@ -248,11 +248,11 @@ Free models never need a Zen key: with `anonymous: true` they are served by the 
 
 `warp.enabled` moves every free-model request on a free lane — the anonymous lane, the free-model fallback through a Zen key, free-model availability probes, and the anonymous catalog refresh — onto a userspace Cloudflare WARP tunnel. Those requests use no proxy, so the free tier sees the WARP exit address instead of a configured node. Go-plan keys and paid models keep their proxy bindings.
 
-The tunnel lives inside the gateway process: it registers a WARP device, speaks WireGuard over UDP to Cloudflare, and terminates in a userspace network stack. It needs no TUN device, root, `NET_ADMIN`, or routing-table change, but the host or container must be able to send UDP to Cloudflare's endpoint (port `2408`). Registration and the `warp=on` trace probe run at startup; if WARP cannot initialize, startup fails instead of silently falling back to proxies. Enabling it through the WebUI is also fail-closed: a bad value returns an error and the previous runtime keeps serving.
+The tunnel lives inside the gateway process: it registers a WARP device, speaks WireGuard over UDP to Cloudflare, and terminates in a userspace network stack. It needs no TUN device, root, `NET_ADMIN`, or routing-table change, but the host or container must be able to send UDP to Cloudflare's endpoint (port `2408`). Registration and the `warp=on` trace probe run at startup and wait up to 90 seconds for the first exit. If WARP still cannot initialize, the gateway opens its listeners without WARP and retries in the background (15s, 30s, 1m, 2m, then every 5m), hot-swapping the pool in when a registration succeeds. Enabling or changing WARP through the WebUI remains fail-closed: the save waits up to 45 seconds, then returns an error and the previous runtime keeps serving.
 
-`warp.pool_size` (1–32, default `2`) is an upper bound, not a fixed count. The first exit registers synchronously and gates readiness; the pool then registers half of the ceiling (at least one) in the background, so a burst finds warm exits instead of waiting for registrations. The active ring follows concurrency: one exit per in-flight lease plus a spare, never more than the maximum. Surplus exits that stay idle for 60 seconds are retired, so a quiet period scales back down. An exit answered with 429 or 403 is retired immediately and a pre-registered exit takes its place — a free-model request keeps switching to another exit and only returns the last 429 to the client once `retry.max_attempts` is spent — and the retired exit is re-registered in the background right away. Registrations are serialized; Cloudflare's 429/Retry-After answer sets the pacing instead of a fixed delay. If the colo hands out fewer distinct egress blocks than the preload, the pool backs off instead of registering forever, and automatic free-model probes skip a pool without a spare exit and stop the sweep after one probe retires an exit. `warp.stack` selects `ipv6` (default), `ipv4`, or `dual`.
+`warp.pool_size` (1–32, default `2`) is an upper bound, not a fixed count. The first exit registers synchronously and gates readiness; the pool then pre-registers the whole ceiling in the background, capped at 8 exits, so a burst finds warm exits instead of waiting for registrations. The active ring follows concurrency: one exit per in-flight lease plus a spare, never more than the maximum. Surplus exits that stay idle for 60 seconds are retired, so a quiet period scales back down. An exit answered with 429 or 403 is retired immediately and a pre-registered exit takes its place — a free-model request keeps switching to another exit and only returns the last 429 to the client once `retry.max_attempts` is spent — and the retired exit is re-registered in the background right away. Registrations are serialized; Cloudflare's 429/Retry-After answer sets the pacing instead of a fixed delay. If the colo hands out fewer distinct egress blocks than the preload, the pool backs off instead of registering forever, and automatic free-model probes skip a pool without a spare exit and stop the sweep after one probe retires an exit. When the pool stays empty for 25 seconds, the free lane reports `warp_unavailable` and, if a configured proxy is available, retries through it instead of failing the client. `warp.stack` selects `ipv6` (default), `ipv4`, or `dual`.
 
-The upstream free quota is scoped to the egress block, so rotation only helps when a replacement leaves from a different one: an IPv6 exit is keyed and cooled by its `/64` for 30 minutes, an IPv4 exit by its `/32`. Cloudflare's WARP IPv4 egress is usually one shared NAT address, which other users routinely exhaust; the IPv6 stack gets an egress derived from the outer WireGuard source. Set `warp.source_ipv6` to an IPv6 prefix routed to the host (usually a `/64`), with the default `ipv6` stack to make every exit bind its own source address from that prefix. The prefix needs `IPV6_FREEBIND` on Linux (the gateway sets it) or addresses already assigned to an interface. Endpoint family is not probed in advance: the handshake tries IPv6 endpoints first and falls back to IPv4 ones when none answer (the exit then egresses from the shared address). Leave `source_ipv6` empty to keep the host's default source address. On networks whose WARP egress pool is saturated every fresh exit can still answer 429; the gateway then churns exits without ever surfacing a 429 before the attempt budget is spent. `/healthz` reports a `warp` block and answers 503 while WARP is enabled but no exit is active; `no_healthy_proxies` only blocks readiness when WARP is off or Go keys need proxies. Diagnostics acquire an exit but never rotate or penalize it. Turning WARP off restores proxy routing for the free lanes.
+The upstream free quota is scoped to the egress block, so rotation only helps when a replacement leaves from a different one: an IPv6 exit is blacklisted by its `/64` and an IPv4 exit by its `/32`. A quota 429 parks the block for a fixed 24 hours (`Retry-After` can extend it, capped at 24h); an ordinary rate limit parks it for 1 minute (capped at 5 minutes); a transport failure parks the exit for 90 seconds. The blacklist is persisted in `config.json.warp-state.json` beside the config, so restarting the process does not put spent blocks back into rotation. Cloudflare's WARP IPv4 egress is usually one shared NAT address, which other users routinely exhaust; the IPv6 stack gets an egress derived from the outer WireGuard source. Set `warp.source_ipv6` to an IPv6 prefix routed to the host (usually a `/64`), with the default `ipv6` stack to make every exit bind its own source address from that prefix. The prefix needs `IPV6_FREEBIND` on Linux (the gateway sets it) or addresses already assigned to an interface. Endpoint family is not probed in advance: the handshake tries IPv6 endpoints first and falls back to IPv4 ones when none answer (the exit then egresses from the shared address). Leave `source_ipv6` empty to keep the host's default source address. On networks whose WARP egress pool is saturated every fresh exit can still answer 429; the gateway then churns exits without ever surfacing a 429 before the attempt budget is spent. `/healthz` reports a `warp` block and answers 503 while WARP is enabled but no exit is active; `no_healthy_proxies` only blocks readiness when WARP is off or Go keys need proxies. Diagnostics acquire an exit but never rotate or penalize it. Turning WARP off restores proxy routing for the free lanes.
 
 ### Official system prompt
 
@@ -303,7 +303,7 @@ See [config.example.json](config.example.json) for a complete starting configura
 | `zen_keys`, `go_keys`       | At least one upstream key is required unless anonymous access is enabled.   |
 | `anonymous`                 | `false`.                                                                    |
 | `warp.enabled`              | `false`; free-lane traffic leaves through Cloudflare WARP and no proxy.    |
-| `warp.pool_size`            | `2`; upper bound on WARP exits (half pre-registered in the background; the active ring follows concurrency), 1–32. |
+| `warp.pool_size`            | `2`; upper bound on WARP exits (the whole pool is pre-registered up to 8; the active ring follows concurrency), 1–32. |
 | `warp.stack`                | `ipv6`; `ipv6`, `ipv4`, or `dual`.                                          |
 | `warp.source_ipv6`          | empty; IPv6 prefix (`/64`) each exit binds its outer source from; requires `stack = "ipv6"`. |
 | `prefer`                    | `go`; accepts `go` or `zen`.                                                |

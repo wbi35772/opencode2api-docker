@@ -78,12 +78,12 @@ Thư mục cấu hình phải ghi được để thực hiện việc chuyển m
 
 ## Docker
 
-Image được phát hành là `ghcr.io/jasonxu114514/opencode2api`.
+Compose mặc định build `opencode2api:local` từ source hiện tại; đặt `OPENCODE2API_IMAGE` để dùng tag khác. Hướng dẫn WSL2 (cổng, WARP, lưu trữ) xem [docs/docker-wsl2.zh-CN.md](docs/docker-wsl2.zh-CN.md) (tiếng Trung).
 
 ```bash
 cp config.example.json config.json
 # Cấu hình key và thay mật khẩu WebUI trước khi khởi động.
-docker compose up -d
+docker compose up -d --build
 docker compose logs -f
 ```
 
@@ -96,13 +96,13 @@ docker compose restart
 
 Container chạy dịch vụ bằng user không có đặc quyền. Compose dùng hệ thống file gốc chỉ đọc, volume trạng thái ghi được và hệ thống file tạm `/tmp`.
 
-WARP chỉ cần UDP ra ngoài (endpoint Cloudflare, cổng `2408`), nên thiết lập user thường, không `NET_ADMIN` của image vẫn dùng được; không cần chuyển sang host networking hay thêm `--cap-add`. Nếu mạng container chặn UDP, việc bật WARP sẽ thất bại lúc khởi động.
+WARP chỉ cần UDP ra ngoài (endpoint Cloudflare, cổng `2408`), nên thiết lập user thường, không `NET_ADMIN` của image vẫn dùng được; không cần chuyển sang host networking hay thêm `--cap-add`. Khi khởi động, gateway chờ tối đa 90 giây cho lần đăng ký WARP đầu tiên; nếu vẫn thất bại, nó mở listener mà không có WARP và thử lại ở nền (15 giây, 30 giây, 1 phút, 2 phút, sau đó mỗi 5 phút), rồi chuyển sang pool WARP khi đăng ký thành công. Bật WARP qua WebUI vẫn fail-closed: lưu chờ tối đa 45 giây, báo lỗi và runtime cũ tiếp tục phục vụ.
 
 | Biến Compose                     | Mặc định  | Tác dụng                                                    |
 | -------------------------------- | --------- | ----------------------------------------------------------- |
-| `OPENCODE2API_VERSION`           | `latest`  | Tag image. Ghim tag release khi cần phiên bản cố định.       |
-| `OPENCODE2API_PORT`              | `8080`    | Cổng host ánh xạ tới cổng 8080 của container.                |
-| `OPENCODE2API_WEBUI_PORT`        | `8081`    | Cổng host ánh xạ tới cổng 8081 của container.                |
+| `OPENCODE2API_IMAGE`             | `opencode2api:local` | Tên và tag image Compose build hoặc chạy.          |
+| `OPENCODE2API_PORT`              | `28080`   | Cổng host ánh xạ tới cổng 8080 của container.                |
+| `OPENCODE2API_WEBUI_PORT`        | `28081`   | Cổng host ánh xạ tới cổng 8081 của container.                |
 | `OPENCODE2API_LISTEN`            | Không đặt | Ghi đè rõ ràng địa chỉ lắng nghe API trong container.        |
 | `OPENCODE2API_WEBUI_LISTEN`      | Không đặt | Ghi đè rõ ràng địa chỉ lắng nghe WebUI trong container.      |
 
@@ -116,7 +116,7 @@ Build image cục bộ:
 docker build -t opencode2api:local .
 docker volume create opencode2api-state
 docker run -d --name opencode2api \
-  -p 8080:8080 -p 8081:8081 \
+  -p 28080:8080 -p 28081:8081 \
   -e CONFIG_SEED_PATH=/run/config/opencode2api.json \
   -v "$(pwd)/config.json:/run/config/opencode2api.json:ro" \
   -v opencode2api-state:/var/lib/opencode2api \
@@ -252,11 +252,11 @@ Mô hình miễn phí không bao giờ cần key Zen: với `anonymous: true` ch
 
 `warp.enabled` đưa mọi request mô hình miễn phí trên làn miễn phí — làn ẩn danh, dự phòng mô hình miễn phí qua Zen Key, dò tính khả dụng mô hình miễn phí, và làm mới danh mục mô hình ẩn danh — sang đường hầm Cloudflare WARP chạy trong tiến trình. Các request này không dùng proxy nào, nên upstream thấy địa chỉ đầu ra WARP thay vì nút đã cấu hình. Key gói Go và mô hình trả phí vẫn giữ proxy.
 
-Đường hầm chạy bên trong tiến trình gateway: đăng ký thiết bị WARP, nói WireGuard qua UDP với Cloudflare và kết thúc trong một ngăn xếp mạng userspace. Nó không cần thiết bị TUN, root, `NET_ADMIN` hay thay đổi bảng định tuyến, nhưng máy chủ hoặc container phải gửi được UDP tới endpoint của Cloudflare (cổng `2408`). Đăng ký và probe trace `warp=on` chạy lúc khởi động; nếu WARP không khởi tạo được, quá trình khởi động thất bại thay vì âm thầm quay về proxy. Bật qua WebUI cũng đóng khi lỗi: giá trị sai trả về lỗi và runtime cũ tiếp tục phục vụ.
+Đường hầm chạy bên trong tiến trình gateway: đăng ký thiết bị WARP, nói WireGuard qua UDP với Cloudflare và kết thúc trong một ngăn xếp mạng userspace. Nó không cần thiết bị TUN, root, `NET_ADMIN` hay thay đổi bảng định tuyến, nhưng máy chủ hoặc container phải gửi được UDP tới endpoint của Cloudflare (cổng `2408`). Đăng ký và probe trace `warp=on` chạy lúc khởi động và chờ tối đa 90 giây cho đầu ra đầu tiên. Nếu vẫn thất bại, gateway mở listener mà không có WARP và thử lại ở nền (15 giây, 30 giây, 1 phút, 2 phút, sau đó mỗi 5 phút), rồi chuyển sang pool WARP khi đăng ký thành công. Bật hoặc sửa WARP qua WebUI vẫn fail-closed: lưu chờ tối đa 45 giây, trả lỗi và runtime cũ tiếp tục phục vụ.
 
-`warp.pool_size` (1–32, mặc định `2`) là **giới hạn trên**, không phải số cố định. Đầu ra đầu tiên được đăng ký đồng bộ và quyết định trạng thái sẵn sàng; sau đó pool đăng ký nền một nửa giới hạn (ít nhất một) để lưu lượng đột biến có sẵn đầu ra đã ấm. Vòng đầu ra hoạt động thay đổi theo mức đồng thời: một đầu ra cho mỗi request đang chạy cộng một đầu ra dự phòng, không vượt quá giới hạn; các đầu ra thừa rảnh rỗi 60 giây sẽ bị thu hồi. Đầu ra nhận 429 hoặc 403 lần đầu sẽ bị loại ngay và một đầu ra đã đăng ký trước thay vào; request model miễn phí tiếp tục đổi đầu ra và chỉ trả 429 cuối cùng cho client sau khi dùng hết `retry.max_attempts`, còn đầu ra bị loại được đăng ký lại ngay ở nền. Việc đăng ký vẫn tuần tự; phản hồi 429/Retry-After của Cloudflare quyết định nhịp thay cho khoảng nghỉ cố định. Nếu colo cấp ít khối đầu ra khác nhau hơn mức preload, pool sẽ lùi lại thay vì đăng ký vô hạn; kiểm tra tự động model miễn phí bỏ qua pool không có đầu ra dự phòng và dừng lượt sau khi một lần kiểm tra loại bỏ một đầu ra. `warp.stack` chọn `ipv6` (mặc định), `ipv4` hoặc `dual`.
+`warp.pool_size` (1–32, mặc định `2`) là **giới hạn trên**, không phải số cố định. Đầu ra đầu tiên được đăng ký đồng bộ và quyết định trạng thái sẵn sàng; sau đó pool đăng ký nền toàn bộ giới hạn, tối đa 8 đầu ra, để lưu lượng đột biến có sẵn đầu ra đã ấm. Vòng đầu ra hoạt động thay đổi theo mức đồng thời: một đầu ra cho mỗi request đang chạy cộng một đầu ra dự phòng, không vượt quá giới hạn; các đầu ra thừa rảnh rỗi 60 giây sẽ bị thu hồi. Đầu ra nhận 429 hoặc 403 lần đầu sẽ bị loại ngay và một đầu ra đã đăng ký trước thay vào; request model miễn phí tiếp tục đổi đầu ra và chỉ trả 429 cuối cùng cho client sau khi dùng hết `retry.max_attempts`, còn đầu ra bị loại được đăng ký lại ngay ở nền. Việc đăng ký vẫn tuần tự; phản hồi 429/Retry-After của Cloudflare quyết định nhịp thay cho khoảng nghỉ cố định. Nếu colo cấp ít khối đầu ra khác nhau hơn mức preload, pool sẽ lùi lại thay vì đăng ký vô hạn; kiểm tra tự động model miễn phí bỏ qua pool không có đầu ra dự phòng và dừng lượt sau khi một lần kiểm tra loại bỏ một đầu ra. `warp.stack` chọn `ipv6` (mặc định), `ipv4` hoặc `dual`.
 
-Hạn mức miễn phí của upstream tính theo **dải đầu ra**, nên luân chuyển chỉ có tác dụng khi đầu ra thay thế đến từ dải khác: đầu ra IPv6 được nhận diện và làm nguội theo `/64` trong 30 phút, đầu ra IPv4 theo `/32`. Đầu ra IPv4 của Cloudflare WARP thường là một địa chỉ NAT dùng chung và đã bị người dùng khác dùng hết; ngăn xếp IPv6 lấy đầu ra từ địa chỉ nguồn WireGuard bên ngoài. Đặt `warp.source_ipv6` thành tiền tố IPv6 được định tuyến tới máy chủ (thường là `/64`, stack mặc định đã là `ipv6`) để mỗi đầu ra tự bind một địa chỉ nguồn trong tiền tố đó. Trên Linux địa chỉ này được bind qua `IPV6_FREEBIND` (gateway tự đặt), hoặc phải được gán sẵn cho giao diện. Không dò trước họ địa chỉ: handshake thử các endpoint IPv6 trước và tự quay về endpoint IPv4 khi tất cả đều lỗi (khi đó đầu ra là địa chỉ dùng chung). Để trống thì dùng địa chỉ nguồn mặc định của máy chủ. Trên mạng có pool đầu ra WARP đã cạn, đầu ra mới cũng có thể trả 429: gateway vẫn tiếp tục luân chuyển và chỉ trả 429 khi hết ngân sách thử. `/healthz` trả về khối `warp` và 503 khi WARP bật nhưng không có đầu ra nào hoạt động; `no_healthy_proxies` chỉ chặn readiness khi WARP tắt hoặc có key Go cần proxy. Request chẩn đoán có lấy đầu ra nhưng không bao giờ luân chuyển hay phạt nó. Tắt WARP sẽ khôi phục định tuyến qua proxy cho các làn miễn phí.
+Hạn mức miễn phí của upstream tính theo **dải đầu ra**, nên luân chuyển chỉ có tác dụng khi đầu ra thay thế đến từ dải khác: đầu ra IPv6 bị blacklist theo `/64`, đầu ra IPv4 theo `/32`. Lỗi 429 do hết quota giữ khối đó trong 24 giờ cố định (`Retry-After` có thể kéo dài, tối đa 24 giờ); giới hạn tần suất thông thường giữ 1 phút (tối đa 5 phút); lỗi truyền tải giữ 90 giây. Blacklist được lưu trong `config.json.warp-state.json` cạnh file cấu hình, nên khởi động lại không đưa các dải đã dùng hết trở lại vòng quay. Đầu ra IPv4 của Cloudflare WARP thường là một địa chỉ NAT dùng chung và đã bị người dùng khác dùng hết; ngăn xếp IPv6 lấy đầu ra từ địa chỉ nguồn WireGuard bên ngoài. Đặt `warp.source_ipv6` thành tiền tố IPv6 được định tuyến tới máy chủ (thường là `/64`, stack mặc định đã là `ipv6`) để mỗi đầu ra tự bind một địa chỉ nguồn trong tiền tố đó. Trên Linux địa chỉ này được bind qua `IPV6_FREEBIND` (gateway tự đặt), hoặc phải được gán sẵn cho giao diện. Không dò trước họ địa chỉ: handshake thử các endpoint IPv6 trước và tự quay về endpoint IPv4 khi tất cả đều lỗi (khi đó đầu ra là địa chỉ dùng chung). Để trống thì dùng địa chỉ nguồn mặc định của máy chủ. Trên mạng có pool đầu ra WARP đã cạn, đầu ra mới cũng có thể trả 429: gateway vẫn tiếp tục luân chuyển và chỉ trả 429 khi hết ngân sách thử. `/healthz` trả về khối `warp` và 503 khi WARP bật nhưng không có đầu ra nào hoạt động; `no_healthy_proxies` chỉ chặn readiness khi WARP tắt hoặc có key Go cần proxy. Request chẩn đoán có lấy đầu ra nhưng không bao giờ luân chuyển hay phạt nó. Tắt WARP sẽ khôi phục định tuyến qua proxy cho các làn miễn phí.
 
 ### System prompt chính thức
 
@@ -307,7 +307,7 @@ Xem [config.example.json](config.example.json) để có một cấu hình khở
 | `zen_keys`, `go_keys`      | Cần ít nhất một key upstream trừ khi bật truy cập ẩn danh.       |
 | `anonymous`                | `false`.                                                         |
 | `warp.enabled`             | `false`; lưu lượng làn miễn phí đi qua Cloudflare WARP, không dùng proxy. |
-| `warp.pool_size`           | `2`; giới hạn trên số đầu ra WARP (một nửa đăng ký trước ở nền; vòng hoạt động theo mức đồng thời), 1–32. |
+| `warp.pool_size`           | `2`; giới hạn trên số đầu ra WARP (cả pool được đăng ký trước, tối đa 8; vòng hoạt động theo mức đồng thời), 1–32. |
 | `warp.stack`               | `ipv6`; `ipv6`, `ipv4` hoặc `dual`.                              |
 | `warp.source_ipv6`         | rỗng; tiền tố IPv6 (`/64`) mỗi đầu ra bind nguồn bên ngoài; cần `stack = "ipv6"`. |
 | `prefer`                   | `go`; nhận `go` hoặc `zen`.                                      |

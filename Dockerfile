@@ -45,7 +45,9 @@ WORKDIR /app
 
 EXPOSE 8080 8081
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# WARP startup may spend up to 90s waiting for a registration before the
+# listeners open with the proxy fallback, so the start period covers it.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint"]
